@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>냠냠어스 관리자</title>
+<!--
+  냠냠어스 운영자 관리자 페이지 (정적 단일 파일, 운영(prod) 전용).
+  - 공지사항 발행/수정/삭제, 사용자 문의(feedback) 조회·상태 갱신.
+  - 보안: 이 파일에는 '공개(anon) 키'만 있다(누구나 봐도 안전). 모든 권한은 서버의
+    RLS(is_admin())가 통제한다. 관리자 email 계정으로 로그인하지 않으면 아무것도 못 한다.
+    ⚠️ service_role(비밀) 키는 절대 여기에 넣지 말 것 — DB 전체가 노출된다.
+  - 접속: https://mkik137.github.io/Terms-of-Service/admin/
+-->
+<style>
+  :root {
+    --bg: #faf7f5; --card: #ffffff; --line: #ecdfd9; --text: #2a1712;
+    --muted: #7a655d; --primary: #d6422a; --primary-ink: #fff; --ok: #2e9e57; --warn: #b5842a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 14px 20px;
+    background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 800; }
+  .spacer { flex: 1; }
+  .who { font-size: 12.5px; color: var(--muted); }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px; margin-bottom: 16px;
+  }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display: block; font-size: 12.5px; font-weight: 700; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=email], input[type=password], textarea, input[type=url] {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; background: #fff; color: var(--text);
+  }
+  textarea { min-height: 92px; resize: vertical; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 160px; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-weight: 700; }
+  .check input { width: 18px; height: 18px; }
+  button {
+    font: inherit; font-weight: 700; border: none; border-radius: 10px; padding: 10px 16px;
+    cursor: pointer; background: var(--primary); color: var(--primary-ink);
+  }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  button.sm { padding: 6px 10px; font-size: 12.5px; border-radius: 8px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tabs button { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .tabs button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .list-item {
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
+    display: flex; gap: 12px; align-items: flex-start;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
+  .dot.on { background: var(--ok); } .dot.off { background: #cbb8b1; }
+  .grow { flex: 1; min-width: 0; }
+  .title { font-weight: 800; font-size: 14.5px; word-break: break-word; }
+  .meta { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .msg { font-size: 13.5px; margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+  .badge { font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px; background: #f1e7e3; color: #6a4a41; }
+  .badge.bug { background:#ffdbd1; color:#8a2a14; } .badge.idea { background:#e2f0d9; color:#2e6a3c; }
+  .badge.question { background:#e0ecff; color:#284f8a; }
+  .badge.open { background:#fff0d6; color:#7a4f00; } .badge.done { background:#e2f0d9; color:#2e6a3c; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .err { color: var(--primary); font-size: 13px; margin-top: 8px; min-height: 18px; }
+  .center { min-height: 70vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .login { width: 100%; max-width: 360px; }
+  .hidden { display: none !important; }
+  .empty { color: var(--muted); font-size: 13.5px; padding: 8px 2px; }
+</style>
+</head>
+<body>
+
+<!-- 로그인 화면 -->
+<div id="loginView" class="center">
+  <div class="card login">
+    <h2>냠냠어스 관리자</h2>
+    <p class="hint">운영자 email 계정으로 로그인하세요. (앱의 카카오/구글 로그인과 별개)</p>
+    <label>이메일</label>
+    <input type="email" id="email" autocomplete="username" />
+    <label>비밀번호</label>
+    <input type="password" id="password" autocomplete="current-password" />
+    <div style="margin-top:14px"><button id="loginBtn" style="width:100%">로그인</button></div>
+    <div class="err" id="loginErr"></div>
+  </div>
+</div>
+
+<!-- 관리자 패널 -->
+<div id="appView" class="hidden">
+  <header>
+    <h1>냠냠어스 관리자</h1>
+    <div class="spacer"></div>
+    <span class="who" id="whoami"></span>
+    <button class="ghost sm" id="logoutBtn">로그아웃</button>
+  </header>
+  <main>
+    <div class="tabs">
+      <button id="tabAnnBtn" class="active" onclick="showTab('ann')">공지사항</button>
+      <button id="tabFbBtn" onclick="showTab('fb')">문의 <span id="fbCount"></span></button>
+    </div>
+
+    <!-- 공지 탭 -->
+    <section id="tabAnn">
+      <div class="card">
+        <h2 id="annFormTitle">새 공지 작성</h2>
+        <div class="row">
+          <div>
+            <label>ID (영문/숫자, 예: notice-2026-07-16)</label>
+            <input type="text" id="a_id" placeholder="notice-2026-07-16" />
+          </div>
+        </div>
+        <label>제목 *</label>
+        <input type="text" id="a_title" />
+        <label>본문 (줄바꿈 가능)</label>
+        <textarea id="a_body"></textarea>
+        <div class="row">
+          <div>
+            <label>이미지 URL (선택)</label>
+            <input type="url" id="a_image" placeholder="https://..." />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>버튼 링크 URL (선택)</label>
+            <input type="url" id="a_link" placeholder="https://..." />
+          </div>
+          <div>
+            <label>버튼 문구 (선택, 기본 '자세히 보기')</label>
+            <input type="text" id="a_linklabel" placeholder="자세히 보기" />
+          </div>
+        </div>
+        <div class="check"><input type="checkbox" id="a_active" /><span>지금 노출(active)</span></div>
+        <p class="hint">같은 내용을 이미 '다시 보지 않기' 한 사용자에게도 다시 띄우려면 <b>새 ID</b>로 저장하세요.</p>
+        <div style="margin-top:14px" class="actions">
+          <button id="a_save">저장 / 발행</button>
+          <button class="ghost" id="a_clear">새로 작성</button>
+        </div>
+        <div class="err" id="annErr"></div>
+      </div>
+      <div class="card">
+        <h2>공지 목록</h2>
+        <div id="annList"><div class="empty">불러오는 중…</div></div>
+      </div>
+    </section>
+
+    <!-- 문의 탭 -->
+    <section id="tabFb" class="hidden">
+      <div class="card">
+        <h2>사용자 문의</h2>
+        <div id="fbList"><div class="empty">불러오는 중…</div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ── 운영(prod) 접속 정보 (공개 anon 키 — 노출돼도 안전) ────────────
+  var SUPABASE_URL = "https://temfeihnshpesjggawmx.supabase.co";
+  var SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRlbWZlaWhuc2hwZXNqZ2dhd214Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyMzQ4NDEsImV4cCI6MjA5NzgxMDg0MX0.eygzMK0lQe1ounz6_7ugR0w4LPYL98FwZhLYHneDsQ0";
+  var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function fmtDate(s) {
+    if (!s) return "";
+    var d = new Date(s);
+    if (isNaN(d)) return s;
+    var p = function (n) { return (n < 10 ? "0" : "") + n; };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+      " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+
+  // ── 인증 게이트 ───────────────────────────────────────────────
+  function show(view) {
+    $("loginView").classList.toggle("hidden", view !== "login");
+    $("appView").classList.toggle("hidden", view !== "app");
+  }
+
+  async function refreshGate() {
+    var sess = (await sb.auth.getSession()).data.session;
+    if (!sess) { show("login"); return; }
+    // 관리자 여부는 서버(RLS)가 최종 판단 — is_admin() RPC 로 확인.
+    var res = await sb.rpc("is_admin");
+    if (res.error || res.data !== true) {
+      show("login");
+      $("loginErr").textContent = "이 계정은 관리자가 아니에요. (운영자 계정으로 로그인하세요)";
+      await sb.auth.signOut();
+      return;
+    }
+    $("whoami").textContent = sess.user.email || "";
+    show("app");
+    loadAnnouncements();
+    loadFeedback();
+  }
+
+  $("loginBtn").onclick = async function () {
+    $("loginErr").textContent = "";
+    $("loginBtn").disabled = true;
+    var email = $("email").value.trim();
+    var password = $("password").value;
+    var res = await sb.auth.signInWithPassword({ email: email, password: password });
+    $("loginBtn").disabled = false;
+    if (res.error) { $("loginErr").textContent = "로그인 실패: " + res.error.message; return; }
+    refreshGate();
+  };
+  $("password").addEventListener("keydown", function (e) { if (e.key === "Enter") $("loginBtn").click(); });
+
+  $("logoutBtn").onclick = async function () { await sb.auth.signOut(); location.reload(); };
+
+  // ── 탭 ────────────────────────────────────────────────────────
+  window.showTab = function (t) {
+    $("tabAnn").classList.toggle("hidden", t !== "ann");
+    $("tabFb").classList.toggle("hidden", t !== "fb");
+    $("tabAnnBtn").classList.toggle("active", t === "ann");
+    $("tabFbBtn").classList.toggle("active", t === "fb");
+  };
+
+  // ── 공지사항 ──────────────────────────────────────────────────
+  function clearAnnForm() {
+    ["a_id", "a_title", "a_body", "a_image", "a_link", "a_linklabel"].forEach(function (id) { $(id).value = ""; });
+    $("a_active").checked = false;
+    $("a_id").disabled = false;
+    $("annFormTitle").textContent = "새 공지 작성";
+    $("annErr").textContent = "";
+  }
+  $("a_clear").onclick = clearAnnForm;
+
+  function loadIntoForm(a) {
+    $("a_id").value = a.id; $("a_id").disabled = true; // 기존 공지는 id 고정(수정)
+    $("a_title").value = a.title || "";
+    $("a_body").value = a.body || "";
+    $("a_image").value = a.image_url || "";
+    $("a_link").value = a.link_url || "";
+    $("a_linklabel").value = a.link_label || "";
+    $("a_active").checked = !!a.active;
+    $("annFormTitle").textContent = "공지 수정: " + a.id;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  $("a_save").onclick = async function () {
+    $("annErr").textContent = "";
+    var id = $("a_id").value.trim();
+    var title = $("a_title").value.trim();
+    if (!id || !title) { $("annErr").textContent = "ID 와 제목은 필수예요."; return; }
+    var row = {
+      id: id, title: title,
+      body: $("a_body").value,
+      image_url: $("a_image").value.trim() || null,
+      link_url: $("a_link").value.trim() || null,
+      link_label: $("a_linklabel").value.trim() || null,
+      active: $("a_active").checked,
+      updated_at: new Date().toISOString()
+    };
+    $("a_save").disabled = true;
+    var res = await sb.from("announcements").upsert(row);
+    $("a_save").disabled = false;
+    if (res.error) { $("annErr").textContent = "저장 실패: " + res.error.message; return; }
+    clearAnnForm();
+    loadAnnouncements();
+  };
+
+  async function loadAnnouncements() {
+    var box = $("annList");
+    var res = await sb.from("announcements").select("*").order("created_at", { ascending: false });
+    if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
+    var rows = res.data || [];
+    if (!rows.length) { box.innerHTML = '<div class="empty">등록된 공지가 없어요.</div>'; return; }
+    box.innerHTML = "";
+    rows.forEach(function (a) {
+      var el = document.createElement("div");
+      el.className = "list-item";
+      el.innerHTML =
+        '<div class="dot ' + (a.active ? "on" : "off") + '"></div>' +
+        '<div class="grow">' +
+          '<div class="title">' + esc(a.title) + "</div>" +
+          '<div class="meta">' + esc(a.id) + " · " + (a.active ? "노출중" : "비활성") +
+             " · " + fmtDate(a.created_at) + "</div>" +
+          (a.body ? '<div class="msg">' + esc(a.body) + "</div>" : "") +
+        "</div>" +
+        '<div class="actions"></div>';
+      var acts = el.querySelector(".actions");
+      var editBtn = mkBtn("수정", "ghost sm", function () { loadIntoForm(a); });
+      var toggleBtn = mkBtn(a.active ? "내리기" : "발행", "sm", async function () {
+        toggleBtn.disabled = true;
+        var r = await sb.from("announcements").update({ active: !a.active }).eq("id", a.id);
+        if (r.error) { alert("실패: " + r.error.message); toggleBtn.disabled = false; return; }
+        loadAnnouncements();
+      });
+      var delBtn = mkBtn("삭제", "ghost sm", async function () {
+        if (!confirm("'" + a.id + "' 공지를 삭제할까요?")) return;
+        var r = await sb.from("announcements").delete().eq("id", a.id);
+        if (r.error) { alert("실패: " + r.error.message); return; }
+        loadAnnouncements();
+      });
+      acts.appendChild(editBtn); acts.appendChild(toggleBtn); acts.appendChild(delBtn);
+      box.appendChild(el);
+    });
+  }
+
+  function mkBtn(text, cls, onclick) {
+    var b = document.createElement("button");
+    b.className = cls; b.textContent = text; b.onclick = onclick;
+    return b;
+  }
+
+  // ── 문의(feedback) ────────────────────────────────────────────
+  async function loadFeedback() {
+    var box = $("fbList");
+    var res = await sb.from("feedback").select("*").order("created_at", { ascending: false });
+    if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
+    var rows = res.data || [];
+    var open = rows.filter(function (r) { return r.status === "open"; }).length;
+    $("fbCount").textContent = open ? "(" + open + ")" : "";
+    if (!rows.length) { box.innerHTML = '<div class="empty">문의가 없어요.</div>'; return; }
+    box.innerHTML = "";
+    rows.forEach(function (f) {
+      var cat = (f.category || "etc");
+      var done = f.status === "done";
+      var el = document.createElement("div");
+      el.className = "list-item";
+      el.innerHTML =
+        '<div class="grow">' +
+          '<div class="actions" style="margin-bottom:4px">' +
+            '<span class="badge ' + esc(cat) + '">' + esc(cat) + "</span>" +
+            '<span class="badge ' + (done ? "done" : "open") + '">' + (done ? "처리완료" : "미처리") + "</span>" +
+          "</div>" +
+          '<div class="msg">' + esc(f.message) + "</div>" +
+          '<div class="meta">' +
+            (f.contact ? "연락처: " + esc(f.contact) + " · " : "") +
+            esc(f.platform || "") + (f.app_version ? " v" + esc(f.app_version) : "") +
+            " · " + fmtDate(f.created_at) +
+          "</div>" +
+        "</div>" +
+        '<div class="actions"></div>';
+      var acts = el.querySelector(".actions:last-child");
+      var btn = mkBtn(done ? "미처리로" : "처리완료", "sm" + (done ? " ghost" : ""), async function () {
+        btn.disabled = true;
+        var r = await sb.from("feedback").update({ status: done ? "open" : "done" }).eq("id", f.id);
+        if (r.error) { alert("실패: " + r.error.message); btn.disabled = false; return; }
+        loadFeedback();
+      });
+      acts.appendChild(btn);
+      box.appendChild(el);
+    });
+  }
+
+  // 시작
+  refreshGate();
+})();
+</script>
+</body>
+</html>
