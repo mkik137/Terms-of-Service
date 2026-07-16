@@ -8,9 +8,10 @@
 <!--
   냠냠어스 운영자 관리자 페이지 (정적 단일 파일, 운영(prod) 전용).
   - 공지사항 발행/수정/삭제, 사용자 문의(feedback) 조회·상태 갱신.
-  - 보안: 이 파일에는 '공개(anon) 키'만 있다(누구나 봐도 안전). 모든 권한은 서버의
-    RLS(is_admin())가 통제한다. 관리자 email 계정으로 로그인하지 않으면 아무것도 못 한다.
-    ⚠️ service_role(비밀) 키는 절대 여기에 넣지 말 것 — DB 전체가 노출된다.
+  - 인증: 관리자 전용 비밀번호(앱 유저 auth.users 와 완전 분리). 비번은 서버의
+    admin_secret 테이블에 bcrypt 해시로 보관되고, 비번으로 잠긴 RPC(admin_*)로만 처리된다.
+  - 보안: 이 파일엔 공개(anon) 키만 있다(안전). 비번 없이는 RPC 가 전부 거부된다.
+    ⚠️ service_role(비밀) 키는 절대 여기에 넣지 말 것.
   - 접속: https://mkik137.github.io/Terms-of-Service/admin/
 -->
 <style>
@@ -38,7 +39,7 @@
   }
   h2 { font-size: 15px; margin: 0 0 12px; }
   label { display: block; font-size: 12.5px; font-weight: 700; color: var(--muted); margin: 10px 0 4px; }
-  input[type=text], input[type=email], input[type=password], textarea, input[type=url] {
+  input[type=text], input[type=password], textarea, input[type=url] {
     width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
     font: inherit; background: #fff; color: var(--text);
   }
@@ -82,13 +83,11 @@
 </head>
 <body>
 
-<!-- 로그인 화면 -->
+<!-- 로그인 (관리자 전용 비밀번호) -->
 <div id="loginView" class="center">
   <div class="card login">
     <h2>냠냠어스 관리자</h2>
-    <p class="hint">운영자 email 계정으로 로그인하세요. (앱의 카카오/구글 로그인과 별개)</p>
-    <label>이메일</label>
-    <input type="email" id="email" autocomplete="username" />
+    <p class="hint">운영자 전용 비밀번호를 입력하세요. (앱 로그인과 무관)</p>
     <label>비밀번호</label>
     <input type="password" id="password" autocomplete="current-password" />
     <div style="margin-top:14px"><button id="loginBtn" style="width:100%">로그인</button></div>
@@ -101,7 +100,7 @@
   <header>
     <h1>냠냠어스 관리자</h1>
     <div class="spacer"></div>
-    <span class="who" id="whoami"></span>
+    <span class="who">운영자</span>
     <button class="ghost sm" id="logoutBtn">로그아웃</button>
   </header>
   <main>
@@ -174,6 +173,9 @@
   var SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRlbWZlaWhuc2hwZXNqZ2dhd214Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIyMzQ4NDEsImV4cCI6MjA5NzgxMDg0MX0.eygzMK0lQe1ounz6_7ugR0w4LPYL98FwZhLYHneDsQ0";
   var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
+  var PW_KEY = "nyam_admin_pw";
+  var PW = sessionStorage.getItem(PW_KEY) || null; // 로그인 후 이 탭 세션 동안 보관
+
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -188,25 +190,27 @@
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
       " " + p(d.getHours()) + ":" + p(d.getMinutes());
   }
+  // 비번으로 잠긴 RPC 호출. 비번 오류면 로그아웃으로 유도.
+  async function rpc(fn, params) {
+    var res = await sb.rpc(fn, Object.assign({ p_pw: PW }, params || {}));
+    if (res.error && /unauthorized/i.test(res.error.message || "")) {
+      logout();
+      throw new Error("세션이 만료됐어요. 다시 로그인해 주세요.");
+    }
+    return res;
+  }
 
-  // ── 인증 게이트 ───────────────────────────────────────────────
   function show(view) {
     $("loginView").classList.toggle("hidden", view !== "login");
     $("appView").classList.toggle("hidden", view !== "app");
   }
 
-  async function refreshGate() {
-    var sess = (await sb.auth.getSession()).data.session;
-    if (!sess) { show("login"); return; }
-    // 관리자 여부는 서버(RLS)가 최종 판단 — is_admin() RPC 로 확인.
-    var res = await sb.rpc("is_admin");
-    if (res.error || res.data !== true) {
-      show("login");
-      $("loginErr").textContent = "이 계정은 관리자가 아니에요. (운영자 계정으로 로그인하세요)";
-      await sb.auth.signOut();
-      return;
-    }
-    $("whoami").textContent = sess.user.email || "";
+  function logout() {
+    PW = null; sessionStorage.removeItem(PW_KEY); show("login");
+  }
+  $("logoutBtn").onclick = logout;
+
+  function enter() {
     show("app");
     loadAnnouncements();
     loadFeedback();
@@ -215,16 +219,16 @@
   $("loginBtn").onclick = async function () {
     $("loginErr").textContent = "";
     $("loginBtn").disabled = true;
-    var email = $("email").value.trim();
-    var password = $("password").value;
-    var res = await sb.auth.signInWithPassword({ email: email, password: password });
+    var pw = $("password").value;
+    var res = await sb.rpc("admin_check", { p_pw: pw });
     $("loginBtn").disabled = false;
-    if (res.error) { $("loginErr").textContent = "로그인 실패: " + res.error.message; return; }
-    refreshGate();
+    if (res.error) { $("loginErr").textContent = "오류: " + res.error.message; return; }
+    if (res.data !== true) { $("loginErr").textContent = "비밀번호가 틀렸어요."; return; }
+    PW = pw; sessionStorage.setItem(PW_KEY, pw);
+    $("password").value = "";
+    enter();
   };
   $("password").addEventListener("keydown", function (e) { if (e.key === "Enter") $("loginBtn").click(); });
-
-  $("logoutBtn").onclick = async function () { await sb.auth.signOut(); location.reload(); };
 
   // ── 탭 ────────────────────────────────────────────────────────
   window.showTab = function (t) {
@@ -245,7 +249,7 @@
   $("a_clear").onclick = clearAnnForm;
 
   function loadIntoForm(a) {
-    $("a_id").value = a.id; $("a_id").disabled = true; // 기존 공지는 id 고정(수정)
+    $("a_id").value = a.id; $("a_id").disabled = true;
     $("a_title").value = a.title || "";
     $("a_body").value = a.body || "";
     $("a_image").value = a.image_url || "";
@@ -256,64 +260,71 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function annParams(a) {
+    return {
+      p_id: a.id, p_title: a.title, p_body: a.body || "",
+      p_image_url: a.image_url || null, p_link_url: a.link_url || null,
+      p_link_label: a.link_label || null, p_active: !!a.active
+    };
+  }
+
   $("a_save").onclick = async function () {
     $("annErr").textContent = "";
-    var id = $("a_id").value.trim();
-    var title = $("a_title").value.trim();
+    var id = $("a_id").value.trim(), title = $("a_title").value.trim();
     if (!id || !title) { $("annErr").textContent = "ID 와 제목은 필수예요."; return; }
-    var row = {
-      id: id, title: title,
-      body: $("a_body").value,
+    var a = {
+      id: id, title: title, body: $("a_body").value,
       image_url: $("a_image").value.trim() || null,
       link_url: $("a_link").value.trim() || null,
       link_label: $("a_linklabel").value.trim() || null,
-      active: $("a_active").checked,
-      updated_at: new Date().toISOString()
+      active: $("a_active").checked
     };
     $("a_save").disabled = true;
-    var res = await sb.from("announcements").upsert(row);
-    $("a_save").disabled = false;
-    if (res.error) { $("annErr").textContent = "저장 실패: " + res.error.message; return; }
-    clearAnnForm();
-    loadAnnouncements();
+    try {
+      var res = await rpc("admin_upsert_announcement", annParams(a));
+      $("a_save").disabled = false;
+      if (res.error) { $("annErr").textContent = "저장 실패: " + res.error.message; return; }
+      clearAnnForm(); loadAnnouncements();
+    } catch (e) { $("a_save").disabled = false; $("annErr").textContent = e.message; }
   };
 
   async function loadAnnouncements() {
     var box = $("annList");
-    var res = await sb.from("announcements").select("*").order("created_at", { ascending: false });
-    if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
-    var rows = res.data || [];
-    if (!rows.length) { box.innerHTML = '<div class="empty">등록된 공지가 없어요.</div>'; return; }
-    box.innerHTML = "";
-    rows.forEach(function (a) {
-      var el = document.createElement("div");
-      el.className = "list-item";
-      el.innerHTML =
-        '<div class="dot ' + (a.active ? "on" : "off") + '"></div>' +
-        '<div class="grow">' +
-          '<div class="title">' + esc(a.title) + "</div>" +
-          '<div class="meta">' + esc(a.id) + " · " + (a.active ? "노출중" : "비활성") +
-             " · " + fmtDate(a.created_at) + "</div>" +
-          (a.body ? '<div class="msg">' + esc(a.body) + "</div>" : "") +
-        "</div>" +
-        '<div class="actions"></div>';
-      var acts = el.querySelector(".actions");
-      var editBtn = mkBtn("수정", "ghost sm", function () { loadIntoForm(a); });
-      var toggleBtn = mkBtn(a.active ? "내리기" : "발행", "sm", async function () {
-        toggleBtn.disabled = true;
-        var r = await sb.from("announcements").update({ active: !a.active }).eq("id", a.id);
-        if (r.error) { alert("실패: " + r.error.message); toggleBtn.disabled = false; return; }
-        loadAnnouncements();
+    try {
+      var res = await rpc("admin_announcements");
+      if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
+      var rows = res.data || [];
+      if (!rows.length) { box.innerHTML = '<div class="empty">등록된 공지가 없어요.</div>'; return; }
+      box.innerHTML = "";
+      rows.forEach(function (a) {
+        var el = document.createElement("div");
+        el.className = "list-item";
+        el.innerHTML =
+          '<div class="dot ' + (a.active ? "on" : "off") + '"></div>' +
+          '<div class="grow">' +
+            '<div class="title">' + esc(a.title) + "</div>" +
+            '<div class="meta">' + esc(a.id) + " · " + (a.active ? "노출중" : "비활성") +
+               " · " + fmtDate(a.created_at) + "</div>" +
+            (a.body ? '<div class="msg">' + esc(a.body) + "</div>" : "") +
+          "</div><div class=\"actions\"></div>";
+        var acts = el.querySelector(".actions");
+        acts.appendChild(mkBtn("수정", "ghost sm", function () { loadIntoForm(a); }));
+        var tgl = mkBtn(a.active ? "내리기" : "발행", "sm", async function () {
+          tgl.disabled = true;
+          var r = await rpc("admin_upsert_announcement", annParams(Object.assign({}, a, { active: !a.active })));
+          if (r.error) { alert("실패: " + r.error.message); tgl.disabled = false; return; }
+          loadAnnouncements();
+        });
+        acts.appendChild(tgl);
+        acts.appendChild(mkBtn("삭제", "ghost sm", async function () {
+          if (!confirm("'" + a.id + "' 공지를 삭제할까요?")) return;
+          var r = await rpc("admin_delete_announcement", { p_id: a.id });
+          if (r.error) { alert("실패: " + r.error.message); return; }
+          loadAnnouncements();
+        }));
+        box.appendChild(el);
       });
-      var delBtn = mkBtn("삭제", "ghost sm", async function () {
-        if (!confirm("'" + a.id + "' 공지를 삭제할까요?")) return;
-        var r = await sb.from("announcements").delete().eq("id", a.id);
-        if (r.error) { alert("실패: " + r.error.message); return; }
-        loadAnnouncements();
-      });
-      acts.appendChild(editBtn); acts.appendChild(toggleBtn); acts.appendChild(delBtn);
-      box.appendChild(el);
-    });
+    } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; }
   }
 
   function mkBtn(text, cls, onclick) {
@@ -325,46 +336,50 @@
   // ── 문의(feedback) ────────────────────────────────────────────
   async function loadFeedback() {
     var box = $("fbList");
-    var res = await sb.from("feedback").select("*").order("created_at", { ascending: false });
-    if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
-    var rows = res.data || [];
-    var open = rows.filter(function (r) { return r.status === "open"; }).length;
-    $("fbCount").textContent = open ? "(" + open + ")" : "";
-    if (!rows.length) { box.innerHTML = '<div class="empty">문의가 없어요.</div>'; return; }
-    box.innerHTML = "";
-    rows.forEach(function (f) {
-      var cat = (f.category || "etc");
-      var done = f.status === "done";
-      var el = document.createElement("div");
-      el.className = "list-item";
-      el.innerHTML =
-        '<div class="grow">' +
-          '<div class="actions" style="margin-bottom:4px">' +
-            '<span class="badge ' + esc(cat) + '">' + esc(cat) + "</span>" +
-            '<span class="badge ' + (done ? "done" : "open") + '">' + (done ? "처리완료" : "미처리") + "</span>" +
-          "</div>" +
-          '<div class="msg">' + esc(f.message) + "</div>" +
-          '<div class="meta">' +
-            (f.contact ? "연락처: " + esc(f.contact) + " · " : "") +
-            esc(f.platform || "") + (f.app_version ? " v" + esc(f.app_version) : "") +
-            " · " + fmtDate(f.created_at) +
-          "</div>" +
-        "</div>" +
-        '<div class="actions"></div>';
-      var acts = el.querySelector(".actions:last-child");
-      var btn = mkBtn(done ? "미처리로" : "처리완료", "sm" + (done ? " ghost" : ""), async function () {
-        btn.disabled = true;
-        var r = await sb.from("feedback").update({ status: done ? "open" : "done" }).eq("id", f.id);
-        if (r.error) { alert("실패: " + r.error.message); btn.disabled = false; return; }
-        loadFeedback();
+    try {
+      var res = await rpc("admin_feedback");
+      if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
+      var rows = res.data || [];
+      var open = rows.filter(function (r) { return r.status === "open"; }).length;
+      $("fbCount").textContent = open ? "(" + open + ")" : "";
+      if (!rows.length) { box.innerHTML = '<div class="empty">문의가 없어요.</div>'; return; }
+      box.innerHTML = "";
+      rows.forEach(function (f) {
+        var cat = (f.category || "etc"), done = f.status === "done";
+        var el = document.createElement("div");
+        el.className = "list-item";
+        el.innerHTML =
+          '<div class="grow">' +
+            '<div class="actions" style="margin-bottom:4px">' +
+              '<span class="badge ' + esc(cat) + '">' + esc(cat) + "</span>" +
+              '<span class="badge ' + (done ? "done" : "open") + '">' + (done ? "처리완료" : "미처리") + "</span>" +
+            "</div>" +
+            '<div class="msg">' + esc(f.message) + "</div>" +
+            '<div class="meta">' +
+              (f.contact ? "연락처: " + esc(f.contact) + " · " : "") +
+              esc(f.platform || "") + (f.app_version ? " v" + esc(f.app_version) : "") +
+              " · " + fmtDate(f.created_at) +
+            "</div>" +
+          "</div><div class=\"actions\"></div>";
+        var acts = el.querySelector(".actions:last-child");
+        var btn = mkBtn(done ? "미처리로" : "처리완료", "sm" + (done ? " ghost" : ""), async function () {
+          btn.disabled = true;
+          var r = await rpc("admin_set_feedback_status", { p_id: f.id, p_status: done ? "open" : "done" });
+          if (r.error) { alert("실패: " + r.error.message); btn.disabled = false; return; }
+          loadFeedback();
+        });
+        acts.appendChild(btn);
+        box.appendChild(el);
       });
-      acts.appendChild(btn);
-      box.appendChild(el);
-    });
+    } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; }
   }
 
-  // 시작
-  refreshGate();
+  // 시작: 저장된 비번이 있으면 검증 후 진입, 없으면 로그인.
+  (async function () {
+    if (!PW) { show("login"); return; }
+    var res = await sb.rpc("admin_check", { p_pw: PW });
+    if (res.data === true) enter(); else logout();
+  })();
 })();
 </script>
 </body>
