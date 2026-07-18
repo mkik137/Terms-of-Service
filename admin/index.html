@@ -79,6 +79,18 @@
   .login { width: 100%; max-width: 360px; }
   .hidden { display: none !important; }
   .empty { color: var(--muted); font-size: 13.5px; padding: 8px 2px; }
+  .chips { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .chip {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    padding: 6px 12px; font-size: 12.5px; font-weight: 700; border-radius: 999px; cursor: pointer;
+  }
+  .chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .badge.rep { background: #ffdbd1; color: #8a2a14; }
+  .badge.dismissed { background: #eceae9; color: #6b6360; }
+  .badge.collection { background: #e0ecff; color: #284f8a; }
+  .badge.comment { background: #efe3ff; color: #5a3a8a; }
+  .badge.profile { background: #e2f0d9; color: #2e6a3c; }
+  .items { margin-top: 6px; padding-left: 4px; }
 </style>
 </head>
 <body>
@@ -106,6 +118,8 @@
   <main>
     <div class="tabs">
       <button id="tabAnnBtn" class="active" onclick="showTab('ann')">공지사항</button>
+      <button id="tabColBtn" onclick="showTab('col')">컬렉션 <span id="colCount"></span></button>
+      <button id="tabRepBtn" onclick="showTab('rep')">신고 <span id="repCount"></span></button>
       <button id="tabFbBtn" onclick="showTab('fb')">문의 <span id="fbCount"></span></button>
     </div>
 
@@ -150,6 +164,33 @@
       <div class="card">
         <h2>공지 목록</h2>
         <div id="annList"><div class="empty">불러오는 중…</div></div>
+      </div>
+    </section>
+
+    <!-- 컬렉션 탭 (커뮤니티 컬렉션 전체 관리 + 신고됨 필터) -->
+    <section id="tabCol" class="hidden">
+      <div class="card">
+        <h2>컬렉션 관리</h2>
+        <p class="hint">공개된 커뮤니티 컬렉션을 관리해요. 부적절하면 삭제하거나 비공개로 내릴 수 있어요.</p>
+        <div class="chips" id="colFilter">
+          <button class="chip active" data-f="all">전체</button>
+          <button class="chip" data-f="public">공개</button>
+          <button class="chip" data-f="reported">신고됨 <span id="colRepCount"></span></button>
+        </div>
+        <div id="colList"><div class="empty">불러오는 중…</div></div>
+      </div>
+    </section>
+
+    <!-- 신고 탭 (컬렉션/댓글/프로필 신고 처리) -->
+    <section id="tabRep" class="hidden">
+      <div class="card">
+        <h2>신고 처리</h2>
+        <p class="hint">사용자가 접수한 신고예요. 확인 후 해결/기각하거나 대상을 삭제하세요.</p>
+        <div class="chips" id="repFilter">
+          <button class="chip active" data-f="open">미처리</button>
+          <button class="chip" data-f="all">전체</button>
+        </div>
+        <div id="repList"><div class="empty">불러오는 중…</div></div>
       </div>
     </section>
 
@@ -212,7 +253,11 @@
 
   function enter() {
     show("app");
+    bindChips("colFilter", function (f) { colFilter = f; renderCollections(); });
+    bindChips("repFilter", function (f) { repFilter = f; renderReports(); });
     loadAnnouncements();
+    loadCollections();
+    loadReports();
     loadFeedback();
   }
 
@@ -232,11 +277,25 @@
 
   // ── 탭 ────────────────────────────────────────────────────────
   window.showTab = function (t) {
-    $("tabAnn").classList.toggle("hidden", t !== "ann");
-    $("tabFb").classList.toggle("hidden", t !== "fb");
-    $("tabAnnBtn").classList.toggle("active", t === "ann");
-    $("tabFbBtn").classList.toggle("active", t === "fb");
+    ["ann", "col", "rep", "fb"].forEach(function (x) {
+      var C = x.charAt(0).toUpperCase() + x.slice(1);
+      $("tab" + C).classList.toggle("hidden", x !== t);
+      $("tab" + C + "Btn").classList.toggle("active", x === t);
+    });
   };
+
+  // 필터 칩(공용): 클릭 시 active 이동 + 콜백.
+  function bindChips(containerId, onPick) {
+    var box = $(containerId);
+    box.querySelectorAll(".chip").forEach(function (btn) {
+      btn.onclick = function () {
+        box.querySelectorAll(".chip").forEach(function (b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+        onPick(btn.getAttribute("data-f"));
+      };
+    });
+  }
+  function visLabel(v) { return v === "public" ? "공개" : v === "friends" ? "친구공개" : "비공개"; }
 
   // ── 공지사항 ──────────────────────────────────────────────────
   function clearAnnForm() {
@@ -372,6 +431,165 @@
         box.appendChild(el);
       });
     } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; }
+  }
+
+  // ── 컬렉션 관리 ───────────────────────────────────────────────
+  var colData = [], colFilter = "all";
+
+  async function loadCollections() {
+    var box = $("colList");
+    try {
+      var res = await rpc("admin_collections");
+      if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
+      colData = res.data || [];
+      var reported = colData.filter(function (c) { return c.report_count > 0; }).length;
+      $("colRepCount").textContent = reported ? "(" + reported + ")" : "";
+      $("colCount").textContent = reported ? "(" + reported + ")" : "";
+      renderCollections();
+    } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; }
+  }
+
+  function renderCollections() {
+    var box = $("colList");
+    var rows = colData.filter(function (c) {
+      if (colFilter === "reported") return c.report_count > 0;
+      if (colFilter === "public") return c.is_public;
+      return true;
+    });
+    if (!rows.length) { box.innerHTML = '<div class="empty">해당하는 컬렉션이 없어요.</div>'; return; }
+    box.innerHTML = "";
+    rows.forEach(function (c) {
+      var el = document.createElement("div");
+      el.className = "list-item";
+      var reasons = (c.report_reasons || []).join(", ");
+      el.innerHTML =
+        '<div class="grow">' +
+          '<div class="actions" style="margin-bottom:4px">' +
+            (c.report_count > 0 ? '<span class="badge rep">🚩 신고 ' + c.report_count + "</span>" : "") +
+            '<span class="badge ' + (c.is_public ? "done" : "open") + '">' + esc(visLabel(c.visibility)) + "</span>" +
+          "</div>" +
+          '<div class="title">' + esc(c.title || "(제목 없음)") + "</div>" +
+          '<div class="meta">' + esc(c.owner_name || "?") + (c.owner_handle ? " @" + esc(c.owner_handle) : "") +
+            " · 항목 " + c.item_count + " · ❤ " + c.like_count + " · 💾 " + c.save_count + " · 💬 " + c.comment_count +
+            " · " + fmtDate(c.created_at) + "</div>" +
+          (reasons ? '<div class="msg">신고 사유: ' + esc(reasons) + "</div>" : "") +
+          '<div class="items hidden"></div>' +
+        '</div><div class="actions"></div>';
+      var acts = el.querySelector(".actions:last-child");
+      var itemsBox = el.querySelector(".items");
+      acts.appendChild(mkBtn("미리보기", "ghost sm", async function () {
+        if (!itemsBox.classList.contains("hidden")) { itemsBox.classList.add("hidden"); return; }
+        itemsBox.innerHTML = '<div class="meta">불러오는 중…</div>'; itemsBox.classList.remove("hidden");
+        var r = await rpc("admin_collection_items", { p_collection_id: c.id });
+        if (r.error) { itemsBox.innerHTML = '<div class="meta">실패: ' + esc(r.error.message) + "</div>"; return; }
+        var its = r.data || [];
+        itemsBox.innerHTML = its.length ? its.map(function (it) {
+          return '<div class="meta">• ' + esc(it.name || "") + (it.category ? " (" + esc(it.category) + ")" : "") +
+            (it.one_line ? " — " + esc(it.one_line) : "") + "</div>";
+        }).join("") : '<div class="meta">(항목 없음)</div>';
+      }));
+      var hideBtn = mkBtn(c.is_public ? "비공개로" : "공개로", "ghost sm", async function () {
+        hideBtn.disabled = true;
+        var r = await rpc("admin_set_collection_visibility",
+          { p_id: c.id, p_visibility: c.is_public ? "private" : "public" });
+        if (r.error) { alert("실패: " + r.error.message); hideBtn.disabled = false; return; }
+        loadCollections();
+      });
+      acts.appendChild(hideBtn);
+      acts.appendChild(mkBtn("삭제", "sm", async function () {
+        if (!confirm('컬렉션 "' + (c.title || "") + '"을(를) 삭제할까요? 되돌릴 수 없어요.')) return;
+        var r = await rpc("admin_delete_collection", { p_id: c.id });
+        if (r.error) { alert("실패: " + r.error.message); return; }
+        loadCollections(); loadReports();
+      }));
+      box.appendChild(el);
+    });
+  }
+
+  // ── 신고 처리 ─────────────────────────────────────────────────
+  var repData = [], repFilter = "open";
+  var TT = { collection: "컬렉션", comment: "댓글", profile: "프로필" };
+
+  async function loadReports() {
+    var box = $("repList");
+    try {
+      var res = await rpc("admin_reports");
+      if (res.error) { box.innerHTML = '<div class="empty">불러오기 실패: ' + esc(res.error.message) + "</div>"; return; }
+      repData = res.data || [];
+      var open = repData.filter(function (r) { return r.status === "open"; }).length;
+      $("repCount").textContent = open ? "(" + open + ")" : "";
+      renderReports();
+    } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; }
+  }
+
+  function targetSummary(r) {
+    var t = r.target;
+    if (!t) return '<span class="meta">(삭제된 대상)</span>';
+    if (r.target_type === "collection")
+      return "컬렉션 <b>" + esc(t.title || "") + "</b> · " + esc(t.owner_name || "?") + " · " + esc(visLabel(t.visibility));
+    if (r.target_type === "comment")
+      return '댓글 "' + esc(t.body || "") + '" · ' + esc(t.author_name || "?") +
+        (t.collection_title ? " · 컬렉션 " + esc(t.collection_title) : "");
+    if (r.target_type === "profile")
+      return "프로필 <b>" + esc(t.name || "") + "</b>" + (t.handle ? " @" + esc(t.handle) : "");
+    return "";
+  }
+
+  function renderReports() {
+    var box = $("repList");
+    var rows = repData.filter(function (r) { return repFilter === "open" ? r.status === "open" : true; });
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">' + (repFilter === "open" ? "미처리 신고가 없어요." : "신고가 없어요.") + "</div>";
+      return;
+    }
+    box.innerHTML = "";
+    rows.forEach(function (r) {
+      var st = r.status;
+      var stLabel = st === "open" ? "미처리" : st === "resolved" ? "처리완료" : st === "dismissed" ? "기각" : st;
+      var stCls = st === "open" ? "open" : st === "dismissed" ? "dismissed" : "done";
+      var el = document.createElement("div");
+      el.className = "list-item";
+      el.innerHTML =
+        '<div class="grow">' +
+          '<div class="actions" style="margin-bottom:4px">' +
+            '<span class="badge ' + esc(r.target_type) + '">' + esc(TT[r.target_type] || r.target_type) + "</span>" +
+            '<span class="badge ' + stCls + '">' + esc(stLabel) + "</span>" +
+            '<span class="badge rep">' + esc(r.reason || "사유없음") + "</span>" +
+          "</div>" +
+          '<div class="msg">' + targetSummary(r) + "</div>" +
+          '<div class="meta">신고자: ' + esc(r.reporter_name || "?") + " · " + fmtDate(r.created_at) + "</div>" +
+        '</div><div class="actions"></div>';
+      var acts = el.querySelector(".actions:last-child");
+      if (st === "open") {
+        acts.appendChild(mkBtn("해결", "sm", function () { setRep(r.id, "resolved"); }));
+        acts.appendChild(mkBtn("기각", "ghost sm", function () { setRep(r.id, "dismissed"); }));
+      } else {
+        acts.appendChild(mkBtn("미처리로", "ghost sm", function () { setRep(r.id, "open"); }));
+      }
+      if (r.target && r.target_type === "comment") {
+        acts.appendChild(mkBtn("댓글 삭제", "sm", async function () {
+          if (!confirm("이 댓글을 삭제할까요?")) return;
+          var rr = await rpc("admin_delete_comment", { p_id: r.target_id });
+          if (rr.error) { alert("실패: " + rr.error.message); return; }
+          loadReports();
+        }));
+      }
+      if (r.target && r.target_type === "collection") {
+        acts.appendChild(mkBtn("컬렉션 삭제", "sm", async function () {
+          if (!confirm("신고된 컬렉션을 삭제할까요? 되돌릴 수 없어요.")) return;
+          var rr = await rpc("admin_delete_collection", { p_id: r.target_id });
+          if (rr.error) { alert("실패: " + rr.error.message); return; }
+          loadReports(); loadCollections();
+        }));
+      }
+      box.appendChild(el);
+    });
+  }
+
+  async function setRep(id, status) {
+    var r = await rpc("admin_set_report_status", { p_id: id, p_status: status });
+    if (r.error) { alert("실패: " + r.error.message); return; }
+    loadReports(); loadCollections();
   }
 
   // 시작: 저장된 비번이 있으면 검증 후 진입, 없으면 로그인.
