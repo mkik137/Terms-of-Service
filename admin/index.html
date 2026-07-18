@@ -139,8 +139,15 @@
         <textarea id="a_body"></textarea>
         <div class="row">
           <div>
-            <label>이미지 URL (선택)</label>
-            <input type="url" id="a_image" placeholder="https://..." />
+            <label>이미지 (선택, jpg/png/webp/gif · 5MB 이하)</label>
+            <input type="file" id="a_imageFile" accept="image/*" />
+            <input type="hidden" id="a_image" />
+            <div id="a_imageStatus" class="hint"></div>
+            <div id="a_imagePreview" class="hidden" style="margin-top:8px">
+              <img id="a_imagePreviewImg" alt="미리보기"
+                   style="max-width:220px;max-height:150px;border-radius:8px;border:1px solid var(--line);display:block" />
+              <button type="button" class="ghost sm" id="a_imageRemove" style="margin-top:6px">이미지 제거</button>
+            </div>
           </div>
         </div>
         <div class="row">
@@ -298,8 +305,18 @@
   function visLabel(v) { return v === "public" ? "공개" : v === "friends" ? "친구공개" : "비공개"; }
 
   // ── 공지사항 ──────────────────────────────────────────────────
+  // 공지 이미지 상태(hidden a_image = URL) + 미리보기 토글.
+  function setAnnImage(urlVal) {
+    $("a_image").value = urlVal || "";
+    var has = !!urlVal;
+    $("a_imagePreview").classList.toggle("hidden", !has);
+    if (has) $("a_imagePreviewImg").src = urlVal;
+  }
+
   function clearAnnForm() {
-    ["a_id", "a_title", "a_body", "a_image", "a_link", "a_linklabel"].forEach(function (id) { $(id).value = ""; });
+    ["a_id", "a_title", "a_body", "a_link", "a_linklabel"].forEach(function (id) { $(id).value = ""; });
+    setAnnImage("");
+    $("a_imageFile").value = ""; $("a_imageStatus").textContent = "";
     $("a_active").checked = false;
     $("a_id").disabled = false;
     $("annFormTitle").textContent = "새 공지 작성";
@@ -311,13 +328,48 @@
     $("a_id").value = a.id; $("a_id").disabled = true;
     $("a_title").value = a.title || "";
     $("a_body").value = a.body || "";
-    $("a_image").value = a.image_url || "";
+    setAnnImage(a.image_url || "");
+    $("a_imageFile").value = ""; $("a_imageStatus").textContent = "";
     $("a_link").value = a.link_url || "";
     $("a_linklabel").value = a.link_label || "";
     $("a_active").checked = !!a.active;
     $("annFormTitle").textContent = "공지 수정: " + a.id;
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+
+  // 파일 선택 → admin-upload Edge Function 으로 업로드 → 공개 URL 을 a_image 에 반영.
+  $("a_imageFile").addEventListener("change", async function () {
+    var file = this.files && this.files[0];
+    if (!file) return;
+    var status = $("a_imageStatus");
+    if (!/^image\//.test(file.type)) { status.textContent = "이미지 파일만 올릴 수 있어요."; this.value = ""; return; }
+    if (file.size > 5 * 1024 * 1024) { status.textContent = "파일은 5MB 이하만 가능해요."; this.value = ""; return; }
+    status.textContent = "업로드 중…";
+    try {
+      var dataUrl = await new Promise(function (resolve, reject) {
+        var fr = new FileReader();
+        fr.onload = function () { resolve(fr.result); };
+        fr.onerror = function () { reject(new Error("파일 읽기 실패")); };
+        fr.readAsDataURL(file);
+      });
+      var res = await sb.functions.invoke("admin-upload", {
+        body: { pw: PW, contentType: file.type, dataBase64: dataUrl }
+      });
+      if (res.error) {
+        var msg = "업로드 실패";
+        try { var b = await res.error.context.json(); msg = b.error || msg; }
+        catch (_) { msg = res.error.message || msg; }
+        status.textContent = msg; return;
+      }
+      var url = res.data && res.data.url;
+      if (!url) { status.textContent = "업로드 실패: URL 없음"; return; }
+      setAnnImage(url);
+      status.textContent = "업로드 완료 ✓";
+    } catch (e) { status.textContent = "업로드 실패: " + e.message; }
+    finally { this.value = ""; }
+  });
+
+  $("a_imageRemove").onclick = function () { setAnnImage(""); $("a_imageStatus").textContent = ""; };
 
   function annParams(a) {
     return {
